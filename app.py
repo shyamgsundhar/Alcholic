@@ -1,61 +1,42 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
-import numpy as np
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing import image
+import tensorflow as tf
 from PIL import Image
+import numpy as np
 import io
 
-# Initialize FastAPI app
 app = FastAPI()
 
-# CORS middleware (optional, helpful for frontend testing)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # adjust in production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Load the trained model
+model = tf.keras.models.load_model("alcohol_detection_mobilenetv2_multi.h5")
 
-# Load the model
-MODEL_PATH = "alcohol_detection_mobilenetv2_multi.h5"
-model = load_model(MODEL_PATH)
-
-# Constants
-IMG_SIZE = 224
+# Class names - must match training order
 class_names = ['Alcohol', 'Normal', 'Not_An_Eye']
-CONFIDENCE_THRESHOLD = 0.7
+
+def preprocess_image(image_data):
+    image = Image.open(io.BytesIO(image_data)).convert('RGB')
+    image = image.resize((224, 224))
+    image = np.array(image) / 255.0
+    image = np.expand_dims(image, axis=0)
+    return image
 
 @app.post("/predict/")
-async def classify_image(file: UploadFile = File(...)):
+async def predict(file: UploadFile = File(...)):
     try:
-        # Read and preprocess image
         contents = await file.read()
-        img = Image.open(io.BytesIO(contents)).convert("RGB")
-        img = img.resize((IMG_SIZE, IMG_SIZE))
-        img_array = image.img_to_array(img)
-        img_array = np.expand_dims(img_array, axis=0) / 255.0
+        img = preprocess_image(contents)
+        preds = model.predict(img)[0]
+        max_confidence = float(np.max(preds))
+        predicted_index = int(np.argmax(preds))
+        predicted_label = class_names[predicted_index]
 
-        # Predict
-        prediction = model.predict(img_array)[0]
-        confidence = float(np.max(prediction))
-        predicted_class = int(np.argmax(prediction))
-        label = class_names[predicted_class]
-
-        result = {
-            "class": label,
-            "confidence": round(confidence, 3),
-            "is_valid": bool(confidence > CONFIDENCE_THRESHOLD)
-        }
-
-        return JSONResponse(content=result)
-
+        return JSONResponse(content={
+            "predicted_class": predicted_label,
+            "confidence": max_confidence
+        })
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-# Optional: For local testing
-# if __name__ == "__main__":
-#     uvicorn.run(app, host="0.0.0.0", port=8000)
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
